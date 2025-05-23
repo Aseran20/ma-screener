@@ -10,8 +10,8 @@ import DealsSummary from './components/DealsSummary';
 import LoadingOverlay from './components/LoadingOverlay';
 
 const App: React.FC = () => {
-  const [isLoading, setIsLoading] = useState(false);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
+  const [isLoading, setIsLoading] = useState(false); // Will be used for loading states during operations
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilters, setActiveFilters] = useState<Record<string, any>>({});
@@ -24,65 +24,73 @@ const App: React.FC = () => {
     announcedDeals: 0
   });
   
-  // Check if data is already loaded on startup
-  useEffect(() => {
-    if (window.electron) {
-      window.electron.checkDataLoaded().then((loaded: boolean) => {
-        setIsDataLoaded(loaded);
-        if (loaded) {
-          loadSummaryData();
-        }
-      });
+  const loadSummaryData = React.useCallback(async () => {
+    if (window.electronAPI) {
+      try {
+        console.log('Loading summary data...');
+        const summary = await window.electronAPI.getDealsSummary();
+        console.log('Summary data loaded:', summary);
+        setDealsSummary(summary);
+      } catch (error) {
+        console.error('Error loading summary data:', error);
+      }
+    } else {
+      console.error('electronAPI is not available in loadSummaryData');
     }
   }, []);
-  
-  // Listen for messages from Electron main process
+
+  // Set up event listeners for import progress and completion
   useEffect(() => {
-    if (window.electron) {
-      window.electron.onImportProgress((progress: string) => {
+    if (window.electronAPI) {
+      const handleImportProgress = (progress: string) => {
+        console.log('Import progress:', progress);
         setImportStatus(progress);
-      });
-      
-      window.electron.onImportComplete((message: string) => {
+        setIsLoading(true);
+      };
+
+      const handleImportComplete = (message: string) => {
+        console.log('Import complete:', message);
         setImportStatus(message);
         setIsLoading(false);
         setIsDataLoaded(true);
         loadSummaryData();
-      });
-    }
-    
-    return () => {
-      if (window.electron) {
-        window.electron.removeAllListeners();
-      }
-    };
-  }, []);
+      };
 
-  const handleImportExcel = async () => {
-    setIsLoading(true);
-    setImportStatus('Starting Excel import...');
-    
-    if (window.electron) {
-      try {
-        await window.electron.importExcel();
-      } catch (error) {
-        console.error('Import failed:', error);
-        setImportStatus(`Import failed: ${error}`);
-        setIsLoading(false);
-      }
+      // Set up event listeners
+      window.electronAPI.onImportProgress(handleImportProgress);
+      window.electronAPI.onImportComplete(handleImportComplete);
+
+      // Check if data is already loaded on startup
+      const checkData = async () => {
+        try {
+          console.log('Checking if data is loaded...');
+          const loaded = await window.electronAPI.checkDataLoaded();
+          console.log('Data loaded status:', loaded);
+          setIsDataLoaded(loaded);
+          if (loaded) {
+            await loadSummaryData();
+          } else {
+            setImportStatus('No data found. Please ensure the data directory exists with the required JSON files.');
+          }
+        } catch (error) {
+          console.error('Error checking data:', error);
+          setImportStatus(`Error checking data: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      };
+      
+      checkData();
+
+      // Clean up event listeners when component unmounts
+      return () => {
+        if (window.electronAPI) {
+          window.electronAPI.removeAllListeners();
+        }
+      };
+    } else {
+      console.error('electronAPI is not available');
+      setImportStatus('Error: Could not connect to the application backend. Please try restarting the application.');
     }
-  };
-  
-  const loadSummaryData = async () => {
-    if (window.electron) {
-      try {
-        const summary = await window.electron.getDealsSummary();
-        setDealsSummary(summary);
-      } catch (error) {
-        console.error('Failed to load summary data:', error);
-      }
-    }
-  };
+  }, [loadSummaryData]);
   
   const handleSearch = (query: string) => {
     setSearchQuery(query);
@@ -92,36 +100,36 @@ const App: React.FC = () => {
     setActiveFilters(filters);
   };
 
-  // If data is not loaded yet, show the import screen
+  // If data is not loaded yet, show the loading/error screen
   if (!isDataLoaded) {
     return (
       <div className="min-h-screen bg-gray-100 p-6">
         <div className="max-w-7xl mx-auto">
           <h1 className="text-3xl font-bold text-gray-900 mb-6">M&A Deals Screener</h1>
+          {importStatus && (
+            <div className="mb-4 p-4 bg-yellow-100 text-yellow-800 rounded">
+              {importStatus}
+            </div>
+          )}
           
-          <div className="bg-white shadow rounded-lg p-6 mb-6">
-            <h2 className="text-xl font-semibold mb-4">Import Excel Database</h2>
-            <p className="mb-4 text-gray-600">
-              Import the M&A deals database from Excel to start using the application.
+          <div className="bg-white p-8 rounded-lg shadow-md text-center">
+            <h2 className="text-2xl font-semibold mb-4">Data Not Loaded</h2>
+            <p className="text-gray-600 mb-6">
+              The application is looking for data in: <code className="bg-gray-100 p-1 rounded">data/</code> directory
             </p>
-            
-            <button
-              onClick={handleImportExcel}
-              disabled={isLoading}
-              className={`px-4 py-2 rounded font-medium ${
-                isLoading 
-                  ? 'bg-gray-300 cursor-not-allowed' 
-                  : 'bg-blue-600 hover:bg-blue-700 text-white'
-              }`}
-            >
-              {isLoading ? 'Importing...' : 'Import Excel Data'}
-            </button>
-            
-            {importStatus && (
-              <div className="mt-4 p-3 bg-gray-100 rounded max-h-96 overflow-y-auto">
-                <p className="text-sm text-gray-800 whitespace-pre-line">{importStatus}</p>
-              </div>
-            )}
+            <p className="text-sm text-gray-500 mb-6">
+              Please ensure the data directory exists and contains the required JSON files.
+            </p>
+            <div className="mt-4 p-4 bg-gray-50 rounded border border-gray-200 text-left text-sm">
+              <p className="font-medium mb-2">Expected directory structure:</p>
+              <pre className="bg-black text-green-400 p-2 rounded overflow-x-auto">
+{`data/
+  _metadata.json
+  chunk_0.json
+  chunk_1.json
+  ...`}
+              </pre>
+            </div>
           </div>
         </div>
         

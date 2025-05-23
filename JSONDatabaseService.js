@@ -12,23 +12,30 @@ class JSONDatabaseService {
    * Load metadata for all tables (sheets)
    */
   loadMetadata() {
-    // Get all directories in the data directory (each represents a table/sheet)
-    const tables = fs.readdirSync(this.dataDirectory, { withFileTypes: true })
-      .filter(dirent => dirent.isDirectory())
-      .map(dirent => dirent.name);
-    
-    // Load metadata for each table
-    tables.forEach(table => {
-      try {
-        const metadataPath = path.join(this.dataDirectory, table, '_metadata.json');
-        if (fs.existsSync(metadataPath)) {
-          this.metadata[table] = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-          console.log(`Loaded metadata for table: ${table}`);
+    console.log(`Loading metadata from: ${this.dataDirectory}`);
+    try {
+      // Check if _metadata.json exists in the data directory
+      const metadataPath = path.join(this.dataDirectory, '_metadata.json');
+      if (fs.existsSync(metadataPath)) {
+        this.metadata['deals'] = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        console.log('Loaded metadata for deals table');
+        
+        // Check if we have chunk files
+        const chunkFiles = fs.readdirSync(this.dataDirectory)
+          .filter(file => file.startsWith('chunk_') && file.endsWith('.json'));
+        
+        if (chunkFiles.length > 0) {
+          console.log(`Found ${chunkFiles.length} chunk files`);
+          this.metadata['deals'].chunksCount = chunkFiles.length;
+        } else {
+          console.warn('No chunk files found in the data directory');
         }
-      } catch (error) {
-        console.error(`Error loading metadata for table ${table}:`, error);
+      } else {
+        console.error('_metadata.json not found in data directory');
       }
-    });
+    } catch (error) {
+      console.error('Error loading metadata:', error);
+    }
   }
 
   /**
@@ -37,6 +44,38 @@ class JSONDatabaseService {
    */
   getTables() {
     return Object.keys(this.metadata);
+  }
+
+  /**
+   * Get database statistics
+   * @returns {Object} Statistics about the database
+   */
+  getStatistics() {
+    const tables = this.getTables();
+    const stats = {
+      totalTables: tables.length,
+      tables: {}
+    };
+
+    for (const tableName of tables) {
+      try {
+        const tableData = this.getAllData(tableName);
+        stats.tables[tableName] = {
+          recordCount: tableData.length,
+          columns: tableData.length > 0 ? Object.keys(tableData[0]) : []
+        };
+      } catch (error) {
+        console.error(`Error getting statistics for table ${tableName}:`, error);
+        stats.tables[tableName] = { error: error.message };
+      }
+    }
+
+    // Add total records count
+    stats.totalRecords = Object.values(stats.tables).reduce(
+      (sum, table) => sum + (table.recordCount || 0), 0
+    );
+
+    return stats;
   }
 
   /**
@@ -49,42 +88,78 @@ class JSONDatabaseService {
   }
 
   /**
-   * Read a specific chunk from a table
+   * Read a chunk of data from a table
    * @param {string} tableName - Name of the table
    * @param {number} chunkIndex - Index of the chunk to read
    * @returns {Array|null} Chunk data or null if not found
    */
   readChunk(tableName, chunkIndex) {
-    try {
-      const chunkPath = path.join(this.dataDirectory, tableName, `chunk_${chunkIndex}.json`);
-      if (fs.existsSync(chunkPath)) {
-        return JSON.parse(fs.readFileSync(chunkPath, 'utf8'));
-      }
-      return null;
-    } catch (error) {
-      console.error(`Error reading chunk ${chunkIndex} from table ${tableName}:`, error);
-      return null;
+    // First try the flat structure (chunk files in the data directory)
+    let chunkPath = path.join(this.dataDirectory, `chunk_${chunkIndex}.json`);
+    
+    // If not found, try the nested structure (tableName/chunk_X.json)
+    if (!fs.existsSync(chunkPath)) {
+      chunkPath = path.join(this.dataDirectory, tableName, `chunk_${chunkIndex}.json`);
     }
+    
+    try {
+      if (fs.existsSync(chunkPath)) {
+        console.log(`Reading chunk from: ${chunkPath}`);
+        return JSON.parse(fs.readFileSync(chunkPath, 'utf8'));
+      } else {
+        console.warn(`Chunk file not found: ${chunkPath}`);
+      }
+    } catch (error) {
+      console.error(`Error reading chunk ${chunkIndex} for table ${tableName}:`, error);
+    }
+    
+    return null;
   }
 
   /**
    * Get all data from a table (use with caution for large tables)
    * @param {string} tableName - Name of the table
-   * @returns {Array} All data from the table
+   * @returns {Array} Array of records
    */
   getAllData(tableName) {
+    console.log(`Getting all data for table: ${tableName}`);
     const tableMetadata = this.getTableMetadata(tableName);
     if (!tableMetadata) {
-      throw new Error(`Table '${tableName}' not found`);
+      console.error(`Table '${tableName}' not found in metadata`);
+      return [];
     }
 
     const allData = [];
+    // First try to read from chunk files
     for (let i = 0; i < tableMetadata.chunksCount; i++) {
-      const chunkData = this.readChunk(tableName, i);
-      if (chunkData) {
-        allData.push(...chunkData);
+      try {
+        const chunkData = this.readChunk(tableName, i);
+        if (chunkData && Array.isArray(chunkData)) {
+          allData.push(...chunkData);
+          console.log(`Loaded ${chunkData.length} records from chunk_${i}.json`);
+        }
+      } catch (error) {
+        console.error(`Error reading chunk ${i}:`, error);
       }
     }
+    
+    // If no chunks were found, try to read from a single file
+    if (allData.length === 0) {
+      try {
+        const filePath = path.join(this.dataDirectory, `${tableName}.json`);
+        if (fs.existsSync(filePath)) {
+          const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          if (Array.isArray(data)) {
+            allData.push(...data);
+            console.log(`Loaded ${data.length} records from ${tableName}.json`);
+          }
+        }
+      } catch (error) {
+        console.error('Error reading data file:', error);
+      }
+    }
+    
+    console.log(`Total records loaded: ${allData.length}`);
     return allData;
   }
 

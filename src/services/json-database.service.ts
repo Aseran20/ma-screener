@@ -556,7 +556,7 @@ export class JSONDatabaseService {
   /**
    * Convert snake_case fields to camelCase for frontend
    */
-  private transformDealToCamelCase(deal: any): any {
+  private  transformDealToCamelCase(deal: any): any {
     // Handle both snake_case and camelCase input
     return {
       id: deal.id,
@@ -581,20 +581,78 @@ export class JSONDatabaseService {
       targetEbitda: deal.target_ebitda || deal.targetEbitda
     };
   }
-  
+
   /**
-   * Convert camelCase to snake_case
+   * Get lightweight deal data for the grid (only essential fields)
+   * @param options Query options
+   * @returns Query result with lightweight deal data
    */
-  private camelToSnakeCase(str: string): string {
-    return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+  getDealsLight(options: QueryOptions = {}): QueryResult {
+    const { limit = 100, offset = 0, filter = {} } = options;
+    const tableName = 'deals';
+    const CHUNK_SIZE = 1000; // Define chunk size constant
+    
+    // Get all data (or apply filters if specified)
+    let allData: any[] = [];
+    const tableMetadata = this.getTableMetadata(tableName);
+    
+    if (!tableMetadata) {
+      return { data: [], total: 0, offset, limit };
+    }
+    
+    // Read chunks that might contain the requested data
+    const startChunk = Math.floor(offset / CHUNK_SIZE);
+    const endChunk = Math.min(
+      Math.ceil((offset + limit) / CHUNK_SIZE),
+      tableMetadata.chunksCount
+    );
+    
+    for (let i = startChunk; i < endChunk; i++) {
+      const chunk = this.readChunk(tableName, i) || [];
+      allData = allData.concat(chunk);
+    }
+    
+    // Apply filters if specified
+    if (Object.keys(filter).length > 0) {
+      allData = this.filterData(allData, filter);
+    }
+    
+    // Map to lightweight objects (only include essential fields)
+    const lightData = allData.map(deal => ({
+      id: deal.id,
+      targetName: deal.targetName || deal.target_name,
+      transactionValue: deal.transactionValue || deal.transaction_value,
+      dateAnnounced: deal.dateAnnounced || deal.date_announced,
+      transactionType: deal.transactionType || deal.transaction_type,
+      status: deal.status,
+      // Add other essential fields as needed
+    }));
+    
+    // Apply pagination
+    const paginatedData = lightData.slice(offset % CHUNK_SIZE, (offset % CHUNK_SIZE) + limit);
+    
+    return {
+      data: paginatedData,
+      total: lightData.length,
+      offset,
+      limit
+    };
   }
   
   /**
    * Close the database (no-op for JSON database but needed for compatibility)
    */
   close(): void {
-    // No actual database connection to close in the JSON implementation
-    // but we provide this method for API compatibility
+    // No resources to clean up for JSON files
     console.log('JSONDatabaseService closed');
+  }
+
+  /**
+   * Convert camelCase to snake_case
+   * @param str String in camelCase format
+   * @returns String in snake_case format
+   */
+  private camelToSnakeCase(str: string): string {
+    return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
   }
 }

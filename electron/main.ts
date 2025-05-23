@@ -1,29 +1,92 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
-import path from 'path';
+import * as path from 'path';
 import fs from 'fs';
-import { JSONDatabaseService } from '../src/services/json-database.service';
+import { createWriteStream } from 'fs';
+
+// Set up logging to a file
+const logStream = createWriteStream(path.join(process.cwd(), 'app.log'), { flags: 'a' });
+
+function logToFile(message: string) {
+  const timestamp = new Date().toISOString();
+  logStream.write(`[${timestamp}] ${message}\n`);
+  console.log(`[${timestamp}] ${message}`);
+}
+
+process.on('uncaughtException', (error) => {
+  logToFile(`Uncaught Exception: ${error.message}\n${error.stack}`);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logToFile(`Unhandled Rejection at: ${promise}, reason: ${reason}`);
+});
+// Import the JSONDatabaseService using an absolute path
+const pathModule = require('path');
+const JSONDatabaseService = require(pathModule.join(process.cwd(), 'JSONDatabaseService')).default || require(pathModule.join(process.cwd(), 'JSONDatabaseService'));
 
 let mainWindow: BrowserWindow | null = null;
-let dbService: JSONDatabaseService | null = null;
+// Use 'any' type to avoid type issues with the imported module
+let dbService: any = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1400,
+    height: 900,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
       nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true,
+      preload: path.join(__dirname, 'preload.js'),
+      webviewTag: false,
+      devTools: true,
+      sandbox: true
     },
+    show: false // Don't show the window until it's ready to prevent flickering
   });
 
-  // In production, load the bundled app
-  if (app.isPackaged) {
-    mainWindow.loadFile(path.join(__dirname, '../index.html'));
+  // Show window when ready to prevent flickering
+  mainWindow.once('ready-to-show', () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
+  // Log window events for debugging
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    logToFile(`Window failed to load: ${errorCode} - ${errorDescription}`);
+  });
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    logToFile('Window finished loading');
+  });
+
+  // Handle renderer process crashes
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    logToFile(`Renderer process crashed: ${JSON.stringify(details)}`);
+  });
+
+  // Handle unresponsive renderer
+  mainWindow.on('unresponsive', () => {
+    logToFile('Window became unresponsive');
+  });
+
+  // Load the index.html from the Vite dev server in development
+  // and from the file system in production
+  const appUrl = process.env.ELECTRON_DEV 
+    ? 'http://localhost:3000' 
+    : `file://${path.join(__dirname, '../dist/index.html')}`;
+    
+  logToFile(`Loading URL: ${appUrl}`);
+  
+  mainWindow.loadURL(appUrl).catch(err => {
+    logToFile(`Failed to load URL: ${err.message}`);
+  });
+  
+  // Open DevTools in development mode
+  if (process.env.ELECTRON_DEV) {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    // In development, load from the Vite dev server
-    mainWindow.loadURL('http://localhost:3000');
-    // Open DevTools for debugging
     mainWindow.webContents.openDevTools();
   }
 
@@ -40,34 +103,50 @@ function createWindow() {
 
 app.whenReady().then(() => {
   try {
+    logToFile('Application starting...');
+    logToFile(`Current working directory: ${process.cwd()}`);
+    logToFile(`__dirname: ${__dirname}`);
+    logToFile(`__filename: ${__filename}`);
+    
     // Check if data directory exists
     const dataDir = path.join(process.env.ELECTRON_DEV ? process.cwd() : app.getPath('userData'), 'data');
+    logToFile(`Using data directory: ${dataDir}`);
+    
     if (!fs.existsSync(dataDir)) {
+      logToFile('Data directory does not exist, creating...');
       fs.mkdirSync(dataDir, { recursive: true });
-    }
-    
-    // Check if JSON data files exist
-    const metadataPath = path.join(dataDir, 'metadata.json');
-    const dataFileCheck = fs.existsSync(metadataPath) || 
-                         fs.readdirSync(dataDir).some(f => f.startsWith('M&A Database_chunk_'));
-    
-    if (!dataFileCheck) {
-      console.log(`JSON data files not found in: ${dataDir}`);
-      
-      dialog.showErrorBox('Data Files Missing', 
-        `JSON data files not found in: ${dataDir}\n\nPlease copy the data files to the data directory.`);
-      
-      // Still create the window but show an error screen
-      createWindow();
-      return;
+      logToFile('Data directory created successfully');
     }
     
     // Initialize JSON database service
-    console.log('Initializing JSON Database Service...');
-    dbService = new JSONDatabaseService();
-    console.log('Database initialized successfully');
-    
-    createWindow();
+    logToFile('Initializing JSON Database Service...');
+    try {
+      logToFile(`Attempting to load JSONDatabaseService from: ${pathModule.join(process.cwd(), 'JSONDatabaseService')}`);
+      logToFile(`File exists: ${fs.existsSync(pathModule.join(process.cwd(), 'JSONDatabaseService.js')) ? 'Yes' : 'No'}`);
+      
+      dbService = new JSONDatabaseService(dataDir);
+      logToFile('Database service initialized successfully');
+      
+      // Test database connection
+      try {
+        const stats = dbService.getStatistics();
+        logToFile(`Database statistics: ${JSON.stringify(stats)}`);
+      } catch (statsError) {
+        logToFile(`Error getting database statistics: ${statsError instanceof Error ? statsError.message : String(statsError)}`);
+        if (statsError instanceof Error && statsError.stack) {
+          logToFile(`Stack trace: ${statsError.stack}`);
+        }
+      }
+      
+      createWindow();
+    } catch (dbError) {
+      const errorMessage = `Failed to initialize database: ${dbError instanceof Error ? dbError.message : String(dbError)}`;
+      logToFile(errorMessage);
+      if (dbError instanceof Error && dbError.stack) {
+        logToFile(`Stack trace: ${dbError.stack}`);
+      }
+      throw dbError;
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -75,9 +154,14 @@ app.whenReady().then(() => {
       }
     });
   } catch (error) {
-    console.error('Failed to initialize application:', error);
-    dialog.showErrorBox('Initialization Error', 
-      `Failed to initialize the application: ${error instanceof Error ? error.message : String(error)}`);
+    const errorMessage = `Failed to initialize application: ${error instanceof Error ? error.message : String(error)}`;
+    logToFile(errorMessage);
+    if (error instanceof Error && error.stack) {
+      logToFile(`Stack trace: ${error.stack}`);
+    }
+    
+    dialog.showErrorBox('Initialization Error', errorMessage);
+    app.quit();
   }
 });
 
@@ -90,9 +174,20 @@ app.on('window-all-closed', () => {
 // Check if database exists and is populated
 ipcMain.handle('check-data-loaded', async () => {
   try {
-    if (!dbService) return false;
+    console.log('Checking if data is loaded...');
+    if (!dbService) {
+      console.error('Database service not initialized');
+      return false;
+    }
+    
+    console.log('Database service initialized, getting statistics...');
     const stats = dbService.getStatistics();
-    return stats.totalDeals > 0;
+    console.log('Database statistics:', stats);
+    
+    const hasData = stats && typeof stats.totalDeals === 'number' && stats.totalDeals > 0;
+    console.log(`Data loaded check result: ${hasData}`);
+    
+    return hasData;
   } catch (error) {
     console.error('Error checking if data is loaded:', error);
     return false;

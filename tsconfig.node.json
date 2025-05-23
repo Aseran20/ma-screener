@@ -12,7 +12,17 @@
     "baseUrl": ".",
     "paths": {
       "*": ["node_modules/*", "src/types/*"]
-    }
+    },
+    "noEmit": false,
+    "allowJs": true,
+    "allowSyntheticDefaultImports": true
   },
-  "include": ["vite.config.ts", "electron/**/*.ts", "src/types/**/*.ts"]
+  "include": [
+    "vite.config.ts",
+    "electron/main.ts",
+    "electron/preload.js",
+    "electron/**/*",
+    "src/types/**/*",
+    "JSONDatabaseService.js"
+  ]
 }
